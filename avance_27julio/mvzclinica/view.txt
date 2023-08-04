@@ -1,0 +1,614 @@
+from django.shortcuts import render, redirect
+from appClinica.models import *
+import random
+from django.contrib.auth.models import Group
+from django.db import Error, transaction
+from django.contrib import auth
+from django.http import JsonResponse
+from datetime import date, datetime
+import string
+from django.contrib.auth import authenticate
+from django.conf import settings
+import urllib
+import json
+from django.core.mail import EmailMultiAlternatives
+from django.template.loader import get_template
+import threading
+from smtplib import SMTPException
+from django.http import JsonResponse
+from django.db.models import Sum, Avg, Count
+import matplotlib.pyplot as plt
+from .models import CitaVeterinaria
+import os
+#from fpdf import FPDF
+#from appClinica.pdfSolicitudes import PDF
+from .models import Mascota, AgendarCita, User
+
+
+
+datosSesion = {"user": None, "rutaFoto": None, "rol": None}
+
+# Create your views here.
+
+def inicioAdministrador(request):
+    if request.user.is_authenticated:
+        datosSesion = {"user": request.user,
+                    "rol": request.user.groups.get().name}
+        return render(request, "administrador/inicio.html", datosSesion)
+    else:
+        mensaje = "Debe iniciar sesión"
+        return render(request, "frmIniciarSesion.html", {"mensaje": mensaje})
+
+
+def vistaRegistrarUsuario(request):
+    if request.user.is_authenticated:
+        roles = Group.objects.all()
+        retorno = {"roles": roles, "user": request.user,
+                "rol": request.user.groups.get().name}
+        return render(request, "administrador/frmRegistrarUsuario.html", retorno)
+    else:
+        mensaje = "Debe iniciar sesión"
+        return render(request, "frmIniciarSesion.html", {"mensaje": mensaje})
+
+
+def registrarUsuario(request):
+    try:
+        #Identificacion = request.POST["txtIdentificacion"]
+        nombres = request.POST["txtNombres"]
+        apellidos = request.POST["txtApellidos"]
+        #telefono = int(request.POST["txtTelefono"])
+        correo = request.POST["txtCorreo"]
+        tipo = request.POST["cbTipo"]
+        foto = request.FILES.get("fileFoto", False)
+        idRol = int(request.POST["cbRol"])
+        with transaction.atomic():
+            # crear un objeto de tipo User
+            user = User(username=correo, first_name=nombres,        last_name=apellidos, email=correo, userTipo=tipo, userFoto=foto)
+            user.save()
+            # obtener el Rol de acuerdo a id del rol
+            rol = Group.objects.get(pk=idRol)
+            # agregar el usuario a ese Rol
+            user.groups.add(rol)
+            # si el rol es Administrador se habilita para que tenga acceso al sitio web del administrador
+            if (rol.name == "Administrador"):
+                user.is_staff = True 
+            # se guarda el usuario con los datos que hay
+            user.save()
+            # se llama a la funcion generarPassword
+            passwordGenerado = generarPassword()
+            print(f"password {passwordGenerado}")
+            # con el usuario creado se llama a la función set_password #que encripta el password y lo agrega al campo password del #user.
+            user.set_password(passwordGenerado)
+            # se actualiza el user
+            user.save()
+            mensaje = "Usuario Agregado Correctamente"
+            retorno = {"mensaje": mensaje}
+            # enviar correo al usuario
+            asunto = 'Registro Usuario VetAnimals'
+            mensaje = f'Cordial saludo, <b>{user.first_name} {user.last_name}</b>, nos permitimos.\
+                informarle que usted ha sido registrado en el Sistema gestion de la clinica Veterinaria VetAnimals \
+                Nos permitimos enviarle las credenciales de Ingreso a nuestro sistema.<br>\
+                <br><b>Username: </b> {user.username}\
+                <br><b>Password: </b> {passwordGenerado}\
+                <br><br>Lo invitamos a ingresar a nuestro sistema en la url:\
+                http://gestionUsuario.VetAnimals.co.'
+            thread = threading.Thread(
+                target=enviarCorreo, args=(asunto, mensaje, user.email))
+            thread.start()
+            return redirect("/vistaGestionarUsuarios/", retorno)
+    except Error as error:
+        transaction.rollback()
+        mensaje = f"{error}"
+    retorno = {"mensaje": mensaje}
+    return render(request, "administrador/frmRegistrarUsuario.html", retorno)
+
+def generarPassword():
+    """
+    Genera un password de longitud de 10 que incluye letras mayusculas
+    y minusculas,digitos y cararcteres especiales
+    Returns:
+        _str_: retorna un password
+    """
+    longitud = 10
+
+    caracteres = string.ascii_lowercase + \
+        string.ascii_uppercase + string.digits + string.punctuation
+    password = ''
+
+    for i in range(longitud):
+        password += ''.join(random.choice(caracteres))
+    return password
+
+
+def enviarCorreo(asunto=None, mensaje=None, destinatario=None):
+    remitente = settings.EMAIL_HOST_USER
+    template = get_template('enviarCorreo.html')
+    contenido = template.render({
+        'destinatario': destinatario,
+        'mensaje': mensaje,
+        'asunto': asunto,
+        'remitente': remitente,
+    })
+    try:
+        correo = EmailMultiAlternatives(
+            asunto, mensaje, remitente, [destinatario])
+        correo.attach_alternative(contenido, 'text/html')
+        correo.send(fail_silently=True)
+    except SMTPException as error:
+        print(error)
+
+def vistaGestionarUsuarios(request):
+    if request.user.is_authenticated:
+        usuarios = User.objects.all()
+        retorno = {"usuarios": usuarios, "user": request.user,
+                "rol": request.user.groups.get().name}
+        return render(request, "administrador/vistaGestionarUsuarios.html", retorno)
+    else:
+        mensaje = "Debe iniciar sesión"
+        return render(request, "frmIniciarSesion.html", {"mensaje": mensaje})
+
+
+def vistaLogin(request):
+    if request.user.is_authenticated:
+        if request.user.groups.filter(name='Administrador').exists():
+            #redireccionar al inicio del administrador
+            return redirect('/inicioAdministrador')
+        elif request.user.groups.filter(name='Especialista').exists():
+            #redireccionar al inicio del Especialista
+            return redirect('/inicioEspecialista')
+        elif request.user.groups.filter(name='Tecnico').exists():
+            return redirect('/inicioTecnico')
+        else:
+            return redirect('/inicioCliente')
+    else:
+        # Si el usuario no ha iniciado sesión, renderizar la plantilla de inicio de sesión.
+        return render(request, "frmIniciarSesion.html")
+
+def login(request):
+    # validar el recapthcha
+    """Begin reCAPTCHA validation"""
+    recaptcha_response = request.POST.get('g-recaptcha-response')
+    url = 'https://www.google.com/recaptcha/api/siteverify'
+    values = {
+        'secret': settings.GOOGLE_RECAPTCHA_SECRET_KEY,
+        'response': recaptcha_response
+    }
+    data = urllib.parse.urlencode(values).encode()
+    req = urllib.request.Request(url, data=data)
+    response = urllib.request.urlopen(req)
+    result = json.loads(response.read().decode())
+    print(result)
+    """ End reCAPTCHA validation """
+    if result['success']:
+        username = request.POST["txtUsername"]
+        password = request.POST["txtPassword"]
+        user = authenticate(username=username, password=password)
+        print(user)
+        if user is not None:
+            # registrar la variable de sesión
+            auth.login(request, user)
+            if user.groups.filter(name='Administrador').exists():
+                return redirect('/inicioAdministrador')
+            elif user.groups.filter(name='Especialista').exists():
+                return redirect('/inicioEspecialista')
+            elif user.groups.filter(name='Tecnico').exists():
+                return redirect('/inicioTecnico')
+            else:
+                return redirect('/inicioCliente')
+        else:
+            mensaje = "Usuario o Contraseña Incorrectas"
+            return render(request, "frmIniciarSesion.html", {"mensaje": mensaje})
+    else:
+        mensaje = "Debe validar primero el recaptcha"
+        return render(request, "frmIniciarSesion.html", {"mensaje": mensaje})
+
+
+def salir(request):
+    auth.logout(request)
+    return render(request, "frmIniciarSesion.html",
+                {"mensaje": "Ha cerrado la sesión"})
+
+def AgendarCita(request):
+    citas = AgendarCita.objects.select_related('mascota__cliente').all()
+    return render(request, 'AgendarCita.html', {'citas': citas})
+
+
+def vistaGestionarAgendamientoCita(request):
+    if request.user.is_authenticated:
+        cliente = Cliente.objects.get(user=request.user)
+
+        if request.method == "POST":
+            # Procesar el formulario de agendamiento de citas
+            masCodigo = request.POST.get("mascota_id")
+            fecha = request.POST.get("fecha")
+            hora = request.POST.get("hora")
+
+            mascota = Mascota.objects.get(pk=masCodigo)
+            AgendarCita.objects.create(mascota=mascota, fecha=fecha, hora=hora)
+            mensaje = "La cita ha sido agendada correctamente."
+            return render(request, "vistaGestionarElementos.html", {"cliente": cliente, "mensaje": mensaje})
+
+        else:
+            mascotas = Mascota.objects.filter(cliente=cliente)
+            return render(request, "vistaGestionarElementos.html", {"mascotas": mascotas, "cliente": cliente})
+
+    else:
+        mensaje = "Debe iniciar sesión"
+        return render(request, "frmIniciarSesion.html", {"mensaje": mensaje})
+
+
+
+
+def enviarCorreo(asunto=None, mensaje=None, destinatario=None):
+    remitente = settings.EMAIL_HOST_USER
+    template = get_template('enviarCorreo.html')
+    contenido = template.render({
+        'destinatario': destinatario,
+        'mensaje': mensaje,
+        'asunto': asunto,
+        'remitente': remitente,
+    })
+    try:
+        correo = EmailMultiAlternatives(
+            asunto, mensaje, remitente, destinatario)
+        correo.attach_alternative(contenido, 'text/html')
+        
+        correo.send(fail_silently=True)
+    except SMTPException as error:
+        print(error)
+        
+        
+def vistaGestionarAgendarCita(request):
+    if request.user.is_authenticated:
+        retorno = {"devolutivos": Devolutivo.objects.all(),
+                   "ubicaciones": UbicacionFisica.objects.all(),
+                   "user": request.user, "rol": request.user.groups.get().name}
+        return render(request, "asistente/vistaGestionarElementos.html", retorno)
+    else:
+        mensaje = "Debe iniciar sesión"
+        return render(request, "frmIniciarSesion.html", {"mensaje": mensaje})
+
+
+def especialistaInicio(request):
+    if request.user.is_authenticated:
+        datosSesion = {"user": request.user,
+                    "rol": request.user.groups.get().name}
+        return render(request, "especialista/inicio.html", datosSesion)
+    else:
+        mensaje = "Debe iniciar sesión"
+        return render(request, "frmIniciarSesion.html", {"mensaje": mensaje})
+    
+def tecnicoInicio(request):
+    if request.user.is_authenticated:
+        datosSesion = {"user": request.user,
+                    "rol": request.user.groups.get().name}
+        return render(request, "especialista/inicio.html", datosSesion)
+    else:
+        mensaje = "Debe iniciar sesión"
+        return render(request, "frmIniciarSesion.html", {"mensaje": mensaje})
+    
+     
+def especialistaSolicitudes(request):
+    if request.user.is_authenticated:
+        datosSesion = {"user": request.user,
+                    "rol": request.user.groups.get().name}
+        return render(request, "especialista/solicitudes.html", datosSesion)
+    else:
+        mensaje = "Debe iniciar sesión"
+        return render(request, "frmIniciarSesion.html", {"mensaje": mensaje})
+
+def vistaGestionarCitasVeterinarias(request):
+    if request.user.is_authenticated:
+        retorno = {"citasAgendadas": AgendarCita.objects.all(),
+                "citasVeterinarias": CitaVeterinaria.objects.all(),
+                "user": request.user,
+                "rol": request.user.groups.get().name}
+        return render(request, "especialista/vistaGestionarCitasVeterinarias.html", retorno)
+    else:
+        mensaje = "Debe iniciar sesión"
+        return render(request, "frmIniciarSesion.html", {"mensaje": mensaje})
+    
+
+def vistaRegistrarCitaVeterinaria(request):
+    if request.user.is_authenticated:
+        retorno = {"estadoCitas": estadoCita, "user": request.user,
+                "rol": request.user.groups.get().name}
+        return render(request, "especialista/frmRegistrarCitaVeterinaria.html", retorno)
+    else:
+        mensaje = "Debe iniciar sesión"
+        return render(request, "frmIniciarSesion.html", {"mensaje": mensaje})
+
+
+def registrarCitaVeterinaria(request):
+    if request.method == 'POST':
+        estado = False
+        mensaje = ""
+
+        try:
+            with transaction.atomic():
+                # Datos de la cita veterinaria
+                codigoCita = request.POST.get('txtCodigo', '')
+                acompananteCita = request.POST.get('txtAcompanante', '')
+                resultadoCita = request.POST.get('txtResultado', '')
+                estadoCita = request.POST.get('cbEstado', '')
+                precioCita = float(request.POST.get('txtPrecio', 0))
+                fechaHora = request.POST.get('txtFechaHora', '')
+
+                # Obtener el cliente y la mascota asociada a la cita
+                mascota_id = request.POST.get('mascota_id', None)
+                cliente = None
+                mascota = Mascota.objects.get(pk=mascota_id)
+
+                # Obtener el usuario actual (que debe estar autenticado)
+                usuario_actual = request.user
+
+                # Verificar si el usuario actual es un cliente o un veterinario
+                if usuario_actual.tipo_usuario == 'cliente':
+                    cliente = Cliente.objects.get(user=usuario_actual)
+                elif usuario_actual.tipo_usuario == 'veterinario':
+                    veterinario = Veterinario.objects.get(user=usuario_actual)
+
+                # Crear la cita veterinaria
+                citaVeterinaria = CitaVeterinaria(
+                    citVetCodigo=codigoCita,
+                    citVetAcompanante=acompananteCita,
+                    cliente=cliente,
+                    mascota=mascota,
+                    veterinario=veterinario, # Si se obtiene el veterinario a partir del usuario actual
+                    citVetResultado=resultadoCita,
+                    citVetEstado=estadoCita,
+                    citPrecio=precioCita,
+                    fechaHoraCreacion=fechaHora
+                )
+
+                # Registrar en la base de datos la cita veterinaria
+                citaVeterinaria.save()
+
+                estado = True
+                mensaje = f"Cita veterinaria registrada satisfactoriamente con el código {codigoCita}"
+
+        except Exception as e:
+            transaction.rollback()
+            mensaje = f"Error al registrar la cita veterinaria: {e}"
+
+        retorno = {
+            "mensaje": mensaje,
+            "estadoCitas": estado,
+            "mascotas": Mascota.objects.all(),
+            "clientes": Cliente.objects.all(),
+            "veterinarios": Veterinario.objects.all()
+        }
+
+        return render(request, "ruta_de_tu_template.html", retorno)
+
+    else:
+        # Si no es una solicitud POST, simplemente renderiza el formulario inicial con los datos necesarios (por ejemplo, la lista de mascotas, clientes y veterinarios)
+        retorno = {
+            "mensaje": "",
+            "estadoCitas": False,
+            "mascotas": Mascota.objects.all(),
+            "clientes": Cliente.objects.all(),
+            "veterinarios": Veterinario.objects.all()
+        }
+
+        return render(request, "ruta_de_tu_template.html", retorno)
+  
+  
+    
+def RegistrarCitaVeterinaria(request):
+    estado = False
+    try:
+        # datos de la cita veterinaria
+        codigoCita = request.POST.get('txtCodigo')
+        acompananteCita = request.POST.get('txtAcompanante')
+        # datos del elemento material
+        #userAtiendeCita = User.objects.get(pk=atendidaPor)
+        resultadocita = request.POST.get('txtResultado')
+        estadoCit = request.POST['cbEstado']
+        precioCit = float(request.POST.get('txtPrecio'))
+        fechaHora = request.POST.get('txtFechaHora')
+        masNombre = request.POST.get('txtNombre')
+
+        with transaction.atomic():
+            # obtener cuantas citas se han registrado
+            cantidad = CitaVeterinaria.objects.all().count()
+            # crear un codigo a partir de la cantidad, ajustando 0 al inicio
+            codigoCitaVeterinaria = codigoCita.upper() + str(cantidad+1).rjust(5, '0')
+            # crear la cita veterinaria
+            citaVeterinaria = CitaVeterinaria(citVetCodigo=codigoCita, citVetAcompanante=acompananteCita, cliente=Cliente, mascota=Mascota, user=User, historiaClinica=HistoriaClinica, remision=Remision,   citVetResultado=resultadocita, citVetEstado=estadoCit, citPrecio=precioCit, fechaHoraCreacion=fechaHora)        
+            # registrar en la base de datos la cita veterinaria 
+            citaVeterinaria.save()
+            #crear objeto AgedarCita
+            #cliente = Cliente.objects.all()#creazr modelo cliente
+            #como sacar el id de la mascota del cliente 
+            #mascota = Mascota(masNombre=nombreMas,       masEspecie=especie, masRaza=raza, masColor=color, masSexo=sexo, #masFecNacimiento=fechaNacimiento)
+            # registrar en la base de datos el agendamiento de la cita
+            #mascota.save()
+            estado = True
+            mensaje = f"cita veterinaria registrado Satisfactoriamente con el codigo {codigoCitaVeterinaria}"
+    except Error as error:
+        transaction.rollback()
+        mensaje = f"{error}"
+    retorno = {"mensaje": mensaje, "estadoCitas": estadoCita, "mascota": Mascota.objects.all()}
+    return render(request, "especialista/frmRegistrarCitaVeterinaria.html", retorno)
+
+
+def inicioCliente(request):
+    if request.user.is_authenticated:
+        datosSesion = {"user": request.user,
+                       "rol": request.user.groups.get().name}
+        return render(request, "cliente/inicio.html", datosSesion)
+    else:
+        mensaje = "Debe iniciar sesión"
+        return render(request, "frmIniciarSesion.html", {"mensaje": mensaje})
+
+
+
+
+
+
+#def vistaGestionarMascotas(request):
+ #   if request.user.is_authenticated:
+  #      retorno = {"mascotas": Mascota.objects.all(),
+           #     "user": request.user,
+            #    "rol": request.user.groups.get().name}
+ #       return render(request, "especialista/vistaGestionarMascotas.html", retorno)
+ #   else:
+ #       mensaje = "Debe iniciar sesión"
+  #      return render(request, "frmIniciarSesion.html", {"mensaje": mensaje})
+
+#def vistaRegistrarMascotas(request):
+ #   if request.user.is_authenticated:
+  #      retorno = {"especie": especie, "user": request.user,
+   #             "rol": request.user.groups.get().name}
+    #    return render(request, "especialista/#frmRegistrarMascotas.html", retorno)
+ #   else:
+ #       mensaje = "Debe iniciar sesión"
+  #      return render(request, "frmIniciarSesion.html", #{"mensaje": mensaje})
+
+
+#def registrarMascota(request):
+ #   estado = False
+  #  try:
+   #     nombreMas = request.POST['txtMascota']
+    #    especie = request.POST['cbEspecie']
+     #   raza = request.POST['txtRaza']
+      #  color = request.POST('txtColor')
+       # sexo = request.POST['cbSexo']
+        #fechaNacimiento = request.POST['txtFecha']
+        
+ #       with transaction.atomic():
+  #          # obtener cuantas mascotas se han registrado
+   #         cantidad = Mascota.objects.all().count()
+    #        # crear un codigo a partir de la cantidad, #ajustando 0 al inicio
+     #       codigoMascota = especie.upper() + str(cantidad+1).#rjust(5, '0')
+      #      # crear la mascota
+       #     mascota = Mascota(
+        #        masCodigo=codigoMascota, masNombre=nombreMas, #masEspecie=especie, masRaza=raza, masColor=color, #masSexo=sexo, masFecNacimiento=fechaNacimiento)
+         #   # salvar la mascota en la base de datos
+          #  mascota.save()
+          #  # crear el objeto ServiciosBasicos
+           # serviciosBasicos = ServiciosBasicos##(serBasCodigo=codigoServicio, serBasTipServicio = #servicioTip)
+            ## salvar los servicio basicos en la base de datos
+            #serviciosBasicos.save()
+            # crear el objeto ExamenClinico
+            #examenClinico = ExamenClinico(hisCliCodigo = codigoHisCli, hisCliAcompanante = acompananteHisCli, 
+             #                             exaCliTemperatura = #temperaturaexa, exaClifreCardiaca = #clifreCardiaca, exaCliFreRespiratoria = #respiratoriaFre,  exaCliPulso = clifrePulso, #exaCliEstConciencia = clifreEstConciencia, )
+            
+    
+    
+    
+#def registrarConsultaVeterinaria(request):
+ #   if request.method == "POST":
+  #      nomCliente = request.POST('txtCliente')
+   #     nomMascota = request.POST('txtNomMascota')
+    #    espMascota = request.POST('cbEspMascota')
+     #   nomMascota = request.POST.get('txtNomMascota')
+      #  nomMascota = request.POST.get('txtNomMascota')
+       # idHistoriaClinica = request.POST.get#('txtIdHistoriaClinica')
+       # idRemision = request.POST.get('txtIdRemision')
+       # sintomas = request.POST.get('sintomas')
+       # diagnostico = request.POST.get('diagnostico')
+    
+#def vistaRegistrarCita(request):
+ #   if request.user.is_authenticated:
+  #      retorno = {"agendarCitas": AgendarCita.objects.all(),
+   #                "user": request.user,
+    #               "rol": request.user.groups.get().name}
+     #   return render(request, "especialista/#vistaGestionarCitas.html", retorno)
+    #else:
+     #   mensaje = "Debe iniciar sesión"
+      #  return render(request, "frmIniciarSesion.html", #{"mensaje": mensaje})
+
+
+#def inicioAuxiliar(request):
+ #   if request.user.is_authenticated:
+  #      datosSesion = {"user": request.user,
+   #                    "rol": request.user.groups.get().name}
+    #    return render(request, "auxiliar/inicio.html", #datosSesion)
+    #else:
+     #   mensaje = "Debe iniciar sesión"
+      #  return render(request, "frmIniciarSesion.html", #{"mensaje": mensaje})
+
+
+
+
+
+def registrarCitaVeterinaria(request):
+    if request.method == 'POST':
+        estado = False
+        mensaje = ""
+
+        try:
+            with transaction.atomic():
+                # Datos de la cita veterinaria
+                codigoCita = request.POST.get('txtCodigo', '')
+                acompananteCita = request.POST.get('txtAcompanante', '')
+                resultadoCita = request.POST.get('txtResultado', '')
+                estadoCita = request.POST.get('cbEstado', '')
+                precioCita = float(request.POST.get('txtPrecio', 0))
+                fechaHora = request.POST.get('txtFechaHora', '')
+                # Obtener el cliente y la mascota asociada a la cita
+                masCodigo = request.POST.get('masCodigo', None)
+                cliente = None
+                mascota = Mascota.objects.get(pk=masCodigo)
+                cita = CitaVeterinaria.objects.get(pk=codigoCita)
+                #cliente = cita.citVetUserCliente.
+                # Obtener el usuario actual (que debe estar autenticado)
+                usuario_actual = request.user
+                # Hacer un "inner join" para obtener los datos del veterinario
+                veterinario = User.objects.select_related('veterinario').get(pk=usuario_actual.pk).veterinario 
+                # Hacer un "inner join" para obtener los datos del cliente
+                cliente = User.objects.select_related('cliente').get(pk=usuario_actual.pk).cliente   
+                # Verificar si el usuario actual es un cliente
+                            
+                if usuario_actual.tipo_usuario == 'veterinario':
+                    veterinario = Veterinario.objects.get(user=usuario_actual)
+                elif usuario_actual.tipo_usuario == 'cliente':
+                    cliente = Cliente.objects.get(user=usuario_actual)
+
+                # Crear la cita veterinaria
+                citaVeterinaria = CitaVeterinaria(
+                    citVetCodigo=codigoCita,
+                    citVetAcompanante=acompananteCita,
+                    cliente=cliente,
+                    mascota=mascota,
+                    veterinario=veterinario, # Si se obtiene el veterinario a partir del usuario actual
+                    citVetResultado=resultadoCita,
+                    citVetEstado=estadoCita,
+                    citPrecio=precioCita,
+                    fechaHoraCreacion=fechaHora
+                )
+
+                # Registrar en la base de datos la cita veterinaria
+                citaVeterinaria.save()
+
+                estado = True
+                mensaje = f"Cita veterinaria registrada satisfactoriamente con el código {codigoCita}"
+
+        except Exception as e:
+            transaction.rollback()
+            mensaje = f"Error al registrar la cita veterinaria: {e}"
+
+        retorno = {
+            "mensaje": mensaje,
+            "estadoCitas": estado,
+            "mascotas": Mascota.objects.all(),
+            "clientes": Cliente.objects.all(),
+            "veterinarios": Veterinario.objects.all()
+        }
+
+        return render(request, "frmruta_de_tu_template.html", retorno)
+
+    else:
+        # Si no es una solicitud POST, simplemente renderiza el formulario inicial con los datos necesarios (por ejemplo, la lista de mascotas, clientes y veterinarios)
+        retorno = {
+            "mensaje": "",
+            "estadoCitas": False,
+            "mascotas": Mascota.objects.all(),
+            "clientes": Cliente.objects.all(),
+            "veterinarios": Veterinario.objects.all()
+        }
+
+        return render(request, "frmRegistrarCitaVeterinaria.html", retorno)
+  

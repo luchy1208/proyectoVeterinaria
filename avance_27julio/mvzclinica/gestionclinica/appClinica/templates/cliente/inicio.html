@@ -1,0 +1,49 @@
+{% extends "index.html" %}
+{% block encabezado %}
+    {% include "encabezado.html" %}
+{%endblock %}
+{% block menu %}
+    {% include "cliente/menu.html" %}
+{%endblock %}
+{% block contenido %}
+
+<h3 class="text-center mt-3 fw-bold">NUESTROS SERVICIOS</h3>
+<br>
+<div class="row" style="margin: 0 auto !important; width:55%">
+
+    <div class="col-sm">
+        <div class="text-center fw-bold">Servicios Basicos</div><br>
+        <div class="mb-5 msjInicio">
+            <img src="../media/fotos/basicos.png" width="200" height="150">
+        </div>
+        <div class="d-flex justify-content-center align-items-center">
+            <a href="/vistaLoginCliente/"><button type="submit" class="btn btn-info">Solicitar Cita</button></a>
+        </div>
+    </div>
+    
+    <div class="col-sm">
+        <div class="text-center fw-bold">ServiciosBienestar</div><br>
+        <div class="mb-5 msjInicio">
+            <img src="../media/fotos/peluqueria.png" width="200" height="150">
+        </div>
+        <div class="d-flex justify-content-center align-items-center">
+            <a href="/agendarCita/"><button type="submit" class="btn btn-info">Solicitar Cita</button></a>
+        </div>
+    </div>
+
+    <div class="col-sm">
+        <div class="text-center fw-bold">Urgencias</div><br>
+        <div class="mb-5 msjInicio">
+            <img src="../media/fotos/urgencias.png"  width="200" height="150">
+        </div>
+        <div class="d-flex justify-content-center align-items-center">
+            <a href="/agendarCita/"><button type="submit" class="btn btn-info">Solicitar Cita</button></a>  
+        </div>  
+    </div>
+</div>
+
+
+{%endblock %}
+{% block piePagina %}
+{% include "piePagina.html" %}
+{%endblock %}
